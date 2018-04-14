@@ -493,6 +493,7 @@ function shouldHydrateDueToLegacyHeuristic(container) {
 }
 
 function shouldAutoFocusHostComponent(type: string, props: Props): boolean {
+
   switch (type) {
     case 'button':
     case 'input':
@@ -1011,12 +1012,12 @@ function legacyCreateRootFromDOMContainer(
           (rootSibling: any).hasAttribute(ROOT_ATTRIBUTE_NAME)
         ) {
           warned = true;
-          warning(
-            false,
-            'render(): Target node has markup rendered by React, but there ' +
-              'are unrelated nodes as well. This is most commonly caused by ' +
-              'white-space inserted around server-rendered markup.',
-          );
+          // warning(
+          //   false,
+          //   'render(): Target node has markup rendered by React, but there ' +
+          //     'are unrelated nodes as well. This is most commonly caused by ' +
+          //     'white-space inserted around server-rendered markup.',
+          // );
         }
       }
       container.removeChild(rootSibling);
@@ -1046,10 +1047,10 @@ function legacyRenderSubtreeIntoContainer(
   callback: ?Function,
 ) {
   // TODO: Ensure all entry points contain this check
-  invariant(
-    isValidContainer(container),
-    'Target container is not a DOM element.',
-  );
+  // invariant(
+  //   isValidContainer(container),
+  //   'Target container is not a DOM element.',
+  // );
 
   if (__DEV__) {
     topLevelUpdateWarnings(container);
