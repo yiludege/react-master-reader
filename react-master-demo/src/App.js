@@ -3,22 +3,31 @@ import logo from './logo.svg';
 import './App.css';
 
 class App extends Component {
-  state = { make:'hello' }
+  state = {show: true }
   changeMake = () => {
-    this.setState({make: 'new'})
+    // this.setState({make: 'new'})
+    this.setState((prevState)=>({show: !prevState.show}))
   }
+  // componentWillMount(){
+  //   debugger
+  // }
+  // componentDidMount(){
+  //   debugger
+  // }
+  // componentWillUpdate(){
+  //   debugger
+  // }
+  // componentDidUpdate(){
+  //   debugger
+  // }
   render() {
     return (
-      <div className="App">
-        <header className="App-header">
-          <img src={logo} className="App-logo" alt="logo" />
-          <h1 className="App-title">Welcome to React</h1>
-        </header>
-        <p className="App-intro">
-          To get started, edit <code>src/App.js</code> and save to reload.
-        </p>
-        <div>{this.state.make}</div>
-        <div onClick={this.changeMake}>change</div>
+      <div className="App" onClick={this.changeMake}>
+      why
+        {/* <div>A</div><div>B</div>
+        <div>C</div><div>D</div>
+        <div>{this.state.make}</div> */}
+        {this.state.show && <div>hello</div>}
       </div>
     );
   }

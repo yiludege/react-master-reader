@@ -5,11 +5,7 @@ import App from "./App";
 import registerServiceWorker from "./registerServiceWorker";
 
 ReactDOM.render(
-  <div>
-    <div>hello</div>
-    <div>why</div>
-    <App />
-  </div>,
+  <App/>,
   document.getElementById("root")
 );
 registerServiceWorker();
