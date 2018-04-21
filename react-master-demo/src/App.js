@@ -28,6 +28,7 @@ class App extends Component {
         <div>C</div><div>D</div>
         <div>{this.state.make}</div> */}
         {this.state.show && <div>hello</div>}
+        {!this.state.show && <div>haha</div>}
       </div>
     );
   }
