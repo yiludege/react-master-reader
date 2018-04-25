@@ -1,11 +1,13 @@
 import React, { Component } from 'react';
-import logo from './logo.svg';
+// import logo from './logo.svg';
+import A from './a.js'
 import './App.css';
 
 class App extends Component {
   state = {show: true }
   changeMake = () => {
     // this.setState({make: 'new'})
+    debugger
     this.setState((prevState)=>({show: !prevState.show}))
   }
   // componentWillMount(){
@@ -29,6 +31,7 @@ class App extends Component {
         <div>{this.state.make}</div> */}
         {this.state.show && <div>hello</div>}
         {!this.state.show && <div>haha</div>}
+        <A />
       </div>
     );
   }
