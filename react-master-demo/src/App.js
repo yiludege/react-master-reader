@@ -17,6 +17,7 @@ class App extends Component {
   }
 
   componentDidMount() {
+    console.log('父元素getSnapshotBeforeUpdate: props 和 prevPros：')
     debugger;
   }
 
@@ -44,15 +45,16 @@ class App extends Component {
     );
   }
   render() {
+    debugger
     return (
       <div className="App" onClick={this.changeMake}>
+        <Child one={this.state.one} two={this.state.two} />
         why
         {/* <div>A</div><div>B</div>
         <div>C</div><div>D</div>
         <div>{this.state.make}</div> */}
         {this.state.show && <div>hello</div>}
         {!this.state.show && <div>haha</div>}
-        <Child one={this.state.one} two={this.state.two} />
       </div>
     );
   }

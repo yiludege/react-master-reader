@@ -48,6 +48,7 @@ class A extends Component {
     e.stopPropagation()
   }
   render() { 
+    debugger
     return (
       <div className="A">
         <div onClick={this.handleChange}>{this.state.owe}</div>
