@@ -5,7 +5,7 @@ import "./App.css";
 
 class App extends Component {
   
-  state = { show: true, one: "父元素one", two: { key: "父元素two" } };
+  state = { show: true, one: 2, two: { key: "父元素two" } };
 
   changeMake = () => {
     debugger;

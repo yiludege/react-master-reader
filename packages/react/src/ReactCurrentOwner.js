@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -8,6 +8,7 @@
  */
 
 import type {Fiber} from 'react-reconciler/src/ReactFiber';
+import typeof {Dispatcher} from 'react-reconciler/src/ReactFiberDispatcher';
 
 /**
  * Keeps track of the current owner.
@@ -21,6 +22,7 @@ const ReactCurrentOwner = {
    * @type {ReactComponent}
    */
   current: (null: null | Fiber),
+  currentDispatcher: (null: null | Dispatcher),
 };
 
 export default ReactCurrentOwner;

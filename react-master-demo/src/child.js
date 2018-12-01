@@ -7,11 +7,14 @@ class A extends Component {
     two: PropTypes.object
   }
   state = {
-    owe:'子元素State.owe'
+    owe:1,
+    three: {one: 'asdf'}
   }
 
   static getDerivedStateFromProps(props, state) {
     debugger;
+    console.log(this)
+    return {owe: props.one}
   }
 
 
@@ -37,6 +40,9 @@ class A extends Component {
   }
   componentDidUpdate(prevProps, prevState, snapshot) {
     debugger;
+    // if(this.state.owe !==5) {
+    //   this.setState(prevState => ({ owe: prevState.owe + 1}))
+    // } 
     console.log(
       "子元素componentDidUpdate: props 和 prevPros：",
       this.props == prevProps ? "相等" : "不等"
@@ -44,7 +50,7 @@ class A extends Component {
   }
 
   handleChange = (e) => {
-    this.setState(prevState => ({owe: prevState.owe + '1'}))
+    this.setState(prevState => ({owe: prevState.owe + 1}))
     e.stopPropagation()
   }
   render() { 

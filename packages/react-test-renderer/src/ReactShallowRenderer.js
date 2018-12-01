@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -10,10 +10,80 @@ import React from 'react';
 import {isForwardRef} from 'react-is';
 import describeComponentFrame from 'shared/describeComponentFrame';
 import getComponentName from 'shared/getComponentName';
-import emptyObject from 'fbjs/lib/emptyObject';
-import invariant from 'fbjs/lib/invariant';
-import shallowEqual from 'fbjs/lib/shallowEqual';
+import shallowEqual from 'shared/shallowEqual';
+import invariant from 'shared/invariant';
 import checkPropTypes from 'prop-types/checkPropTypes';
+
+const emptyObject = {};
+if (__DEV__) {
+  Object.freeze(emptyObject);
+}
+
+class Updater {
+  constructor(renderer) {
+    this._renderer = renderer;
+    this._callbacks = [];
+  }
+
+  _enqueueCallback(callback, publicInstance) {
+    if (typeof callback === 'function' && publicInstance) {
+      this._callbacks.push({
+        callback,
+        publicInstance,
+      });
+    }
+  }
+
+  _invokeCallbacks() {
+    const callbacks = this._callbacks;
+    this._callbacks = [];
+
+    callbacks.forEach(({callback, publicInstance}) => {
+      callback.call(publicInstance);
+    });
+  }
+
+  isMounted(publicInstance) {
+    return !!this._renderer._element;
+  }
+
+  enqueueForceUpdate(publicInstance, callback, callerName) {
+    this._enqueueCallback(callback, publicInstance);
+    this._renderer._forcedUpdate = true;
+    this._renderer.render(this._renderer._element, this._renderer._context);
+  }
+
+  enqueueReplaceState(publicInstance, completeState, callback, callerName) {
+    this._enqueueCallback(callback, publicInstance);
+    this._renderer._newState = completeState;
+    this._renderer.render(this._renderer._element, this._renderer._context);
+  }
+
+  enqueueSetState(publicInstance, partialState, callback, callerName) {
+    this._enqueueCallback(callback, publicInstance);
+    const currentState = this._renderer._newState || publicInstance.state;
+
+    if (typeof partialState === 'function') {
+      partialState = partialState.call(
+        publicInstance,
+        currentState,
+        publicInstance.props,
+      );
+    }
+
+    // Null and undefined are treated as no-ops.
+    if (partialState === null || partialState === undefined) {
+      return;
+    }
+
+    this._renderer._newState = {
+      ...currentState,
+      ...partialState,
+    };
+
+    this._renderer.render(this._renderer._element, this._renderer._context);
+  }
+}
 
 class ReactShallowRenderer {
   static createRenderer = function() {
@@ -62,7 +132,9 @@ class ReactShallowRenderer {
         'components, but the provided element type was `%s`.',
       Array.isArray(element.type)
         ? 'array'
-        : element.type === null ? 'null' : typeof element.type,
+        : element.type === null
+          ? 'null'
+          : typeof element.type,
     );
 
     if (this._rendering) {
@@ -103,7 +175,11 @@ class ReactShallowRenderer {
 
         this._mountClassComponent(element, this._context);
       } else {
-        this._rendered = element.type(element.props, this._context);
+        this._rendered = element.type.call(
+          undefined,
+          element.props,
+          this._context,
+        );
       }
     }
 
@@ -139,20 +215,18 @@ class ReactShallowRenderer {
     ) {
       const beforeState = this._newState;
 
-      if (typeof this._instance.componentWillMount === 'function') {
-        // In order to support react-lifecycles-compat polyfilled components,
-        // Unsafe lifecycles should not be invoked for any component with the new gDSFP.
-        if (typeof element.type.getDerivedStateFromProps !== 'function') {
+      // In order to support react-lifecycles-compat polyfilled components,
+      // Unsafe lifecycles should not be invoked for components using the new APIs.
+      if (
+        typeof element.type.getDerivedStateFromProps !== 'function' &&
+        typeof this._instance.getSnapshotBeforeUpdate !== 'function'
+      ) {
+        if (typeof this._instance.componentWillMount === 'function') {
           this._instance.componentWillMount();
         }
-      }
-      if (
-        typeof this._instance.UNSAFE_componentWillMount === 'function' &&
-        typeof element.type.getDerivedStateFromProps !== 'function'
-      ) {
-        // In order to support react-lifecycles-compat polyfilled components,
-        // Unsafe lifecycles should not be invoked for any component with the new gDSFP.
-        this._instance.UNSAFE_componentWillMount();
+        if (typeof this._instance.UNSAFE_componentWillMount === 'function') {
+          this._instance.UNSAFE_componentWillMount();
+        }
       }
 
       // setState may have been called during cWM
@@ -173,24 +247,23 @@ class ReactShallowRenderer {
     const oldProps = this._instance.props;
 
     if (oldProps !== props) {
-      if (typeof this._instance.componentWillReceiveProps === 'function') {
-        // In order to support react-lifecycles-compat polyfilled components,
-        // Unsafe lifecycles should not be invoked for any component with the new gDSFP.
-        if (typeof element.type.getDerivedStateFromProps !== 'function') {
+      // In order to support react-lifecycles-compat polyfilled components,
+      // Unsafe lifecycles should not be invoked for components using the new APIs.
+      if (
+        typeof element.type.getDerivedStateFromProps !== 'function' &&
+        typeof this._instance.getSnapshotBeforeUpdate !== 'function'
+      ) {
+        if (typeof this._instance.componentWillReceiveProps === 'function') {
           this._instance.componentWillReceiveProps(props, context);
         }
+        if (
+          typeof this._instance.UNSAFE_componentWillReceiveProps === 'function'
+        ) {
+          this._instance.UNSAFE_componentWillReceiveProps(props, context);
+        }
       }
-      if (
-        typeof this._instance.UNSAFE_componentWillReceiveProps === 'function' &&
-        typeof element.type.getDerivedStateFromProps !== 'function'
-      ) {
-        // In order to support react-lifecycles-compat polyfilled components,
-        // Unsafe lifecycles should not be invoked for any component with the new gDSFP.
-        this._instance.UNSAFE_componentWillReceiveProps(props, context);
-      }
-
-      this._updateStateFromStaticLifecycle(props);
     }
+    this._updateStateFromStaticLifecycle(props);
 
     // Read state after cWRP in case it calls setState
     const state = this._newState || oldState;
@@ -211,20 +284,18 @@ class ReactShallowRenderer {
     }
 
     if (shouldUpdate) {
-      if (typeof this._instance.componentWillUpdate === 'function') {
-        // In order to support react-lifecycles-compat polyfilled components,
-        // Unsafe lifecycles should not be invoked for any component with the new gDSFP.
-        if (typeof type.getDerivedStateFromProps !== 'function') {
+      // In order to support react-lifecycles-compat polyfilled components,
+      // Unsafe lifecycles should not be invoked for components using the new APIs.
+      if (
+        typeof element.type.getDerivedStateFromProps !== 'function' &&
+        typeof this._instance.getSnapshotBeforeUpdate !== 'function'
+      ) {
+        if (typeof this._instance.componentWillUpdate === 'function') {
           this._instance.componentWillUpdate(props, state, context);
         }
-      }
-      if (
-        typeof this._instance.UNSAFE_componentWillUpdate === 'function' &&
-        typeof type.getDerivedStateFromProps !== 'function'
-      ) {
-        // In order to support react-lifecycles-compat polyfilled components,
-        // Unsafe lifecycles should not be invoked for any component with the new gDSFP.
-        this._instance.UNSAFE_componentWillUpdate(props, state, context);
+        if (typeof this._instance.UNSAFE_componentWillUpdate === 'function') {
+          this._instance.UNSAFE_componentWillUpdate(props, state, context);
+        }
       }
     }
 
@@ -243,75 +314,18 @@ class ReactShallowRenderer {
     const {type} = this._element;
 
     if (typeof type.getDerivedStateFromProps === 'function') {
+      const oldState = this._newState || this._instance.state;
       const partialState = type.getDerivedStateFromProps.call(
         null,
         props,
-        this._instance.state,
+        oldState,
       );
 
       if (partialState != null) {
-        const oldState = this._newState || this._instance.state;
         const newState = Object.assign({}, oldState, partialState);
         this._instance.state = this._newState = newState;
       }
     }
-  }
-}
-
-class Updater {
-  constructor(renderer) {
-    this._renderer = renderer;
-    this._callbacks = [];
-  }
-
-  _enqueueCallback(callback, publicInstance) {
-    if (typeof callback === 'function' && publicInstance) {
-      this._callbacks.push({
-        callback,
-        publicInstance,
-      });
-    }
-  }
-
-  _invokeCallbacks() {
-    const callbacks = this._callbacks;
-    this._callbacks = [];
-
-    callbacks.forEach(({callback, publicInstance}) => {
-      callback.call(publicInstance);
-    });
-  }
-
-  isMounted(publicInstance) {
-    return !!this._renderer._element;
-  }
-
-  enqueueForceUpdate(publicInstance, callback, callerName) {
-    this._enqueueCallback(callback, publicInstance);
-    this._renderer._forcedUpdate = true;
-    this._renderer.render(this._renderer._element, this._renderer._context);
-  }
-
-  enqueueReplaceState(publicInstance, completeState, callback, callerName) {
-    this._enqueueCallback(callback, publicInstance);
-    this._renderer._newState = completeState;
-    this._renderer.render(this._renderer._element, this._renderer._context);
-  }
-
-  enqueueSetState(publicInstance, partialState, callback, callerName) {
-    this._enqueueCallback(callback, publicInstance);
-    const currentState = this._renderer._newState || publicInstance.state;
-
-    if (typeof partialState === 'function') {
-      partialState = partialState(currentState, publicInstance.props);
-    }
-
-    this._renderer._newState = {
-      ...currentState,
-      ...partialState,
-    };
-
-    this._renderer.render(this._renderer._element, this._renderer._context);
   }
 }
 
@@ -337,7 +351,7 @@ function getStackAddendum() {
     stack += describeComponentFrame(
       name,
       currentlyValidatingElement._source,
-      owner && getComponentName(owner),
+      owner && getComponentName(owner.type),
     );
   }
   return stack;
