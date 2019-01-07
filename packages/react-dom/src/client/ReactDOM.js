@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -14,79 +14,90 @@ import type {
   FiberRoot,
   Batch as FiberRootBatch,
 } from 'react-reconciler/src/ReactFiberRoot';
+import type {Container} from './ReactDOMHostConfig';
 
 import '../shared/checkReact';
 import './ReactDOMClientInjection';
 
-import ReactFiberReconciler from 'react-reconciler';
-// TODO: direct imports like some-package/src/* are bad. Fix me.
-import * as ReactPortal from 'shared/ReactPortal';
-import ExecutionEnvironment from 'fbjs/lib/ExecutionEnvironment';
-import * as ReactGenericBatching from 'events/ReactGenericBatching';
-import * as ReactControlledComponent from 'events/ReactControlledComponent';
-import * as EventPluginHub from 'events/EventPluginHub';
-import * as EventPluginRegistry from 'events/EventPluginRegistry';
-import * as EventPropagators from 'events/EventPropagators';
-import * as ReactInstanceMap from 'shared/ReactInstanceMap';
-import {enableCreateRoot} from 'shared/ReactFeatureFlags';
+import {
+  computeUniqueAsyncExpiration,
+  findHostInstanceWithNoPortals,
+  updateContainerAtExpirationTime,
+  flushRoot,
+  createContainer,
+  updateContainer,
+  batchedUpdates,
+  unbatchedUpdates,
+  interactiveUpdates,
+  flushInteractiveUpdates,
+  flushSync,
+  flushControlled,
+  injectIntoDevTools,
+  getPublicRootInstance,
+  findHostInstance,
+  findHostInstanceWithWarning,
+} from 'react-reconciler/inline.dom';
+import {createPortal as createPortalImpl} from 'shared/ReactPortal';
+import {canUseDOM} from 'shared/ExecutionEnvironment';
+import {setBatchingImplementation} from 'events/ReactGenericBatching';
+import {
+  setRestoreImplementation,
+  enqueueStateRestore,
+  restoreStateIfNeeded,
+} from 'events/ReactControlledComponent';
+import {
+  injection as EventPluginHubInjection,
+  runEventsInBatch,
+} from 'events/EventPluginHub';
+import {eventNameDispatchConfigs} from 'events/EventPluginRegistry';
+import {
+  accumulateTwoPhaseDispatches,
+  accumulateDirectDispatches,
+} from 'events/EventPropagators';
+import {has as hasInstance} from 'shared/ReactInstanceMap';
 import ReactVersion from 'shared/ReactVersion';
-import * as ReactDOMFrameScheduling from 'shared/ReactDOMFrameScheduling';
-import {ReactCurrentOwner} from 'shared/ReactGlobalSharedState';
+import ReactSharedInternals from 'shared/ReactSharedInternals';
 import getComponentName from 'shared/getComponentName';
-import invariant from 'fbjs/lib/invariant';
+import invariant from 'shared/invariant';
 import lowPriorityWarning from 'shared/lowPriorityWarning';
-import warning from 'fbjs/lib/warning';
+import warningWithoutStack from 'shared/warningWithoutStack';
+import {enableStableConcurrentModeAPIs} from 'shared/ReactFeatureFlags';
 
-import * as ReactDOMComponentTree from './ReactDOMComponentTree';
-import * as ReactDOMFiberComponent from './ReactDOMFiberComponent';
-import * as ReactInputSelection from './ReactInputSelection';
-import setTextContent from './setTextContent';
-import validateDOMNesting from './validateDOMNesting';
-import * as ReactBrowserEventEmitter from '../events/ReactBrowserEventEmitter';
-import * as ReactDOMEventListener from '../events/ReactDOMEventListener';
-import {getChildNamespace} from '../shared/DOMNamespaces';
+import {
+  getInstanceFromNode,
+  getNodeFromInstance,
+  getFiberCurrentPropsFromNode,
+  getClosestInstanceFromNode,
+} from './ReactDOMComponentTree';
+import {restoreControlledState} from './ReactDOMComponent';
+import {dispatchEvent} from '../events/ReactDOMEventListener';
 import {
   ELEMENT_NODE,
-  TEXT_NODE,
   COMMENT_NODE,
   DOCUMENT_NODE,
   DOCUMENT_FRAGMENT_NODE,
 } from '../shared/HTMLNodeType';
 import {ROOT_ATTRIBUTE_NAME} from '../shared/DOMProperty';
-const {
-  createElement,
-  createTextNode,
-  setInitialProperties,
-  diffProperties,
-  updateProperties,
-  diffHydratedProperties,
-  diffHydratedText,
-  warnForUnmatchedText,
-  warnForDeletedHydratableElement,
-  warnForDeletedHydratableText,
-  warnForInsertedHydratedElement,
-  warnForInsertedHydratedText,
-} = ReactDOMFiberComponent;
-const {updatedAncestorInfo} = validateDOMNesting;
-const {precacheFiberNode, updateFiberProps} = ReactDOMComponentTree;
 
-let SUPPRESS_HYDRATION_WARNING;
+const ReactCurrentOwner = ReactSharedInternals.ReactCurrentOwner;
+
 let topLevelUpdateWarnings;
 let warnOnInvalidCallback;
 let didWarnAboutUnstableCreatePortal = false;
 
 if (__DEV__) {
-  SUPPRESS_HYDRATION_WARNING = 'suppressHydrationWarning';
   if (
     typeof Map !== 'function' ||
+    // $FlowIssue Flow incorrectly thinks Map has no prototype
     Map.prototype == null ||
     typeof Map.prototype.forEach !== 'function' ||
     typeof Set !== 'function' ||
+    // $FlowIssue Flow incorrectly thinks Set has no prototype
     Set.prototype == null ||
     typeof Set.prototype.clear !== 'function' ||
     typeof Set.prototype.forEach !== 'function'
   ) {
-    warning(
+    warningWithoutStack(
       false,
       'React depends on Map and Set built-in types. Make sure that you load a ' +
         'polyfill in older browsers. https://fb.me/react-polyfills',
@@ -95,11 +106,11 @@ if (__DEV__) {
 
   topLevelUpdateWarnings = (container: DOMContainer) => {
     if (container._reactRootContainer && container.nodeType !== COMMENT_NODE) {
-      const hostInstance = DOMRenderer.findHostInstanceWithNoPortals(
+      const hostInstance = findHostInstanceWithNoPortals(
         container._reactRootContainer._internalRoot.current,
       );
       if (hostInstance) {
-        warning(
+        warningWithoutStack(
           hostInstance.parentNode === container,
           'render(...): It looks like the React-rendered content of this ' +
             'container was removed without using React. This is not ' +
@@ -111,11 +122,9 @@ if (__DEV__) {
 
     const isRootRenderedBySomeReact = !!container._reactRootContainer;
     const rootEl = getReactRootElementInContainer(container);
-    const hasNonRootReactChild = !!(
-      rootEl && ReactDOMComponentTree.getInstanceFromNode(rootEl)
-    );
+    const hasNonRootReactChild = !!(rootEl && getInstanceFromNode(rootEl));
 
-    warning(
+    warningWithoutStack(
       !hasNonRootReactChild || isRootRenderedBySomeReact,
       'render(...): Replacing React-rendered children with a new root ' +
         'component. If you intended to update the children of this node, ' +
@@ -123,7 +132,7 @@ if (__DEV__) {
         'and render the new components instead of calling ReactDOM.render.',
     );
 
-    warning(
+    warningWithoutStack(
       container.nodeType !== ELEMENT_NODE ||
         !((container: any): Element).tagName ||
         ((container: any): Element).tagName.toUpperCase() !== 'BODY',
@@ -136,7 +145,7 @@ if (__DEV__) {
   };
 
   warnOnInvalidCallback = function(callback: mixed, callerName: string) {
-    warning(
+    warningWithoutStack(
       callback === null || typeof callback === 'function',
       '%s(...): Expected the last optional `callback` argument to be a ' +
         'function. Instead received: %s.',
@@ -146,11 +155,9 @@ if (__DEV__) {
   };
 }
 
-ReactControlledComponent.injection.injectFiberControlledHostComponent(
-  ReactDOMFiberComponent,
-);
+setRestoreImplementation(restoreControlledState);
 
-type DOMContainer =
+export type DOMContainer =
   | (Element & {
       _reactRootContainer: ?Root,
     })
@@ -158,32 +165,12 @@ type DOMContainer =
       _reactRootContainer: ?Root,
     });
 
-type Container = Element | Document;
-type Props = {
-  autoFocus?: boolean,
-  children?: mixed,
-  hidden?: boolean,
-  suppressHydrationWarning?: boolean,
-};
-type Instance = Element;
-type TextInstance = Text;
-
-type HostContextDev = {
-  namespace: string,
-  ancestorInfo: mixed,
-};
-type HostContextProd = string;
-type HostContext = HostContextDev | HostContextProd;
-
-let eventsEnabled: ?boolean = null;
-let selectionInformation: ?mixed = null;
-
 type Batch = FiberRootBatch & {
   render(children: ReactNodeList): Work,
   then(onComplete: () => mixed): void,
   commit(): void,
 
-  // The ReactRoot constuctor is hoisted but the prototype methods are not. If
+  // The ReactRoot constructor is hoisted but the prototype methods are not. If
   // we move ReactRoot to be above ReactBatch, the inverse error occurs.
   // $FlowFixMe Hoisting issue.
   _root: Root,
@@ -194,8 +181,21 @@ type Batch = FiberRootBatch & {
   _didComplete: boolean,
 };
 
+type Root = {
+  render(children: ReactNodeList, callback: ?() => mixed): Work,
+  unmount(callback: ?() => mixed): Work,
+  legacy_renderSubtreeIntoContainer(
+    parentComponent: ?React$Component<any, any>,
+    children: ReactNodeList,
+    callback: ?() => mixed,
+  ): Work,
+  createBatch(): Batch,
+
+  _internalRoot: FiberRoot,
+};
+
 function ReactBatch(root: ReactRoot) {
-  const expirationTime = DOMRenderer.computeUniqueAsyncExpiration();
+  const expirationTime = computeUniqueAsyncExpiration();
   this._expirationTime = expirationTime;
   this._root = root;
   this._next = null;
@@ -215,7 +215,7 @@ ReactBatch.prototype.render = function(children: ReactNodeList) {
   const internalRoot = this._root._internalRoot;
   const expirationTime = this._expirationTime;
   const work = new ReactWork();
-  DOMRenderer.updateContainerAtExpirationTime(
+  updateContainerAtExpirationTime(
     children,
     internalRoot,
     null,
@@ -286,7 +286,7 @@ ReactBatch.prototype.commit = function() {
 
   // Synchronously flush all the work up to this batch's expiration time.
   this._defer = false;
-  DOMRenderer.flushRoot(internalRoot, expirationTime);
+  flushRoot(internalRoot, expirationTime);
 
   // Pop the batch from the list.
   const next = this._next;
@@ -361,21 +361,12 @@ ReactWork.prototype._onCommit = function(): void {
   }
 };
 
-type Root = {
-  render(children: ReactNodeList, callback: ?() => mixed): Work,
-  unmount(callback: ?() => mixed): Work,
-  legacy_renderSubtreeIntoContainer(
-    parentComponent: ?React$Component<any, any>,
-    children: ReactNodeList,
-    callback: ?() => mixed,
-  ): Work,
-  createBatch(): Batch,
-
-  _internalRoot: FiberRoot,
-};
-
-function ReactRoot(container: Container, isAsync: boolean, hydrate: boolean) {
-  const root = DOMRenderer.createContainer(container, isAsync, hydrate);
+function ReactRoot(
+  container: Container,
+  isConcurrent: boolean,
+  hydrate: boolean,
+) {
+  const root = createContainer(container, isConcurrent, hydrate);
   this._internalRoot = root;
 }
 ReactRoot.prototype.render = function(
@@ -391,7 +382,7 @@ ReactRoot.prototype.render = function(
   if (callback !== null) {
     work.then(callback);
   }
-  DOMRenderer.updateContainer(children, root, null, work._onCommit);
+  updateContainer(children, root, null, work._onCommit);
   return work;
 };
 ReactRoot.prototype.unmount = function(callback: ?() => mixed): Work {
@@ -404,7 +395,7 @@ ReactRoot.prototype.unmount = function(callback: ?() => mixed): Work {
   if (callback !== null) {
     work.then(callback);
   }
-  DOMRenderer.updateContainer(null, root, null, work._onCommit);
+  updateContainer(null, root, null, work._onCommit);
   return work;
 };
 ReactRoot.prototype.legacy_renderSubtreeIntoContainer = function(
@@ -421,7 +412,7 @@ ReactRoot.prototype.legacy_renderSubtreeIntoContainer = function(
   if (callback !== null) {
     work.then(callback);
   }
-  DOMRenderer.updateContainer(children, root, parentComponent, work._onCommit);
+  updateContainer(children, root, parentComponent, work._onCommit);
   return work;
 };
 ReactRoot.prototype.createBatch = function(): Batch {
@@ -439,7 +430,7 @@ ReactRoot.prototype.createBatch = function(): Batch {
     let insertBefore = firstBatch;
     while (
       insertBefore !== null &&
-      insertBefore._expirationTime <= expirationTime
+      insertBefore._expirationTime >= expirationTime
     ) {
       insertAfter = insertBefore;
       insertBefore = insertBefore._next;
@@ -492,505 +483,11 @@ function shouldHydrateDueToLegacyHeuristic(container) {
   );
 }
 
-function shouldAutoFocusHostComponent(type: string, props: Props): boolean {
-
-  switch (type) {
-    case 'button':
-    case 'input':
-    case 'select':
-    case 'textarea':
-      return !!props.autoFocus;
-  }
-  return false;
-}
-
-const DOMRenderer = ReactFiberReconciler({
-  getRootHostContext(rootContainerInstance: Container): HostContext {
-    let type;
-    let namespace;
-    const nodeType = rootContainerInstance.nodeType;
-    switch (nodeType) {
-      case DOCUMENT_NODE:
-      case DOCUMENT_FRAGMENT_NODE: {
-        type = nodeType === DOCUMENT_NODE ? '#document' : '#fragment';
-        let root = (rootContainerInstance: any).documentElement;
-        namespace = root ? root.namespaceURI : getChildNamespace(null, '');
-        break;
-      }
-      default: {
-        const container: any =
-          nodeType === COMMENT_NODE
-            ? rootContainerInstance.parentNode
-            : rootContainerInstance;
-        const ownNamespace = container.namespaceURI || null;
-        type = container.tagName;
-        namespace = getChildNamespace(ownNamespace, type);
-        break;
-      }
-    }
-    if (__DEV__) {
-      const validatedTag = type.toLowerCase();
-      const ancestorInfo = updatedAncestorInfo(null, validatedTag, null);
-      return {namespace, ancestorInfo};
-    }
-    return namespace;
-  },
-
-  getChildHostContext(
-    parentHostContext: HostContext,
-    type: string,
-  ): HostContext {
-    if (__DEV__) {
-      const parentHostContextDev = ((parentHostContext: any): HostContextDev);
-      const namespace = getChildNamespace(parentHostContextDev.namespace, type);
-      const ancestorInfo = updatedAncestorInfo(
-        parentHostContextDev.ancestorInfo,
-        type,
-        null,
-      );
-      return {namespace, ancestorInfo};
-    }
-    const parentNamespace = ((parentHostContext: any): HostContextProd);
-    return getChildNamespace(parentNamespace, type);
-  },
-
-  getPublicInstance(instance) {
-    return instance;
-  },
-
-  prepareForCommit(): void {
-    eventsEnabled = ReactBrowserEventEmitter.isEnabled();
-    selectionInformation = ReactInputSelection.getSelectionInformation();
-    ReactBrowserEventEmitter.setEnabled(false);
-  },
-
-  resetAfterCommit(): void {
-    ReactInputSelection.restoreSelection(selectionInformation);
-    selectionInformation = null;
-    ReactBrowserEventEmitter.setEnabled(eventsEnabled);
-    eventsEnabled = null;
-  },
-
-  createInstance(
-    type: string,
-    props: Props,
-    rootContainerInstance: Container,
-    hostContext: HostContext,
-    internalInstanceHandle: Object,
-  ): Instance {
-    let parentNamespace: string;
-    if (__DEV__) {
-      // TODO: take namespace into account when validating.
-      const hostContextDev = ((hostContext: any): HostContextDev);
-      validateDOMNesting(type, null, hostContextDev.ancestorInfo);
-      if (
-        typeof props.children === 'string' ||
-        typeof props.children === 'number'
-      ) {
-        const string = '' + props.children;
-        const ownAncestorInfo = updatedAncestorInfo(
-          hostContextDev.ancestorInfo,
-          type,
-          null,
-        );
-        validateDOMNesting(null, string, ownAncestorInfo);
-      }
-      parentNamespace = hostContextDev.namespace;
-    } else {
-      parentNamespace = ((hostContext: any): HostContextProd);
-    }
-    const domElement: Instance = createElement(
-      type,
-      props,
-      rootContainerInstance,
-      parentNamespace,
-    );
-    precacheFiberNode(internalInstanceHandle, domElement);
-    updateFiberProps(domElement, props);
-    return domElement;
-  },
-
-  appendInitialChild(
-    parentInstance: Instance,
-    child: Instance | TextInstance,
-  ): void {
-    parentInstance.appendChild(child);
-  },
-
-  finalizeInitialChildren(
-    domElement: Instance,
-    type: string,
-    props: Props,
-    rootContainerInstance: Container,
-  ): boolean {
-    setInitialProperties(domElement, type, props, rootContainerInstance);
-    return shouldAutoFocusHostComponent(type, props);
-  },
-
-  prepareUpdate(
-    domElement: Instance,
-    type: string,
-    oldProps: Props,
-    newProps: Props,
-    rootContainerInstance: Container,
-    hostContext: HostContext,
-  ): null | Array<mixed> {
-    if (__DEV__) {
-      const hostContextDev = ((hostContext: any): HostContextDev);
-      if (
-        typeof newProps.children !== typeof oldProps.children &&
-        (typeof newProps.children === 'string' ||
-          typeof newProps.children === 'number')
-      ) {
-        const string = '' + newProps.children;
-        const ownAncestorInfo = updatedAncestorInfo(
-          hostContextDev.ancestorInfo,
-          type,
-          null,
-        );
-        validateDOMNesting(null, string, ownAncestorInfo);
-      }
-    }
-    return diffProperties(
-      domElement,
-      type,
-      oldProps,
-      newProps,
-      rootContainerInstance,
-    );
-  },
-
-  shouldSetTextContent(type: string, props: Props): boolean {
-    return (
-      type === 'textarea' ||
-      typeof props.children === 'string' ||
-      typeof props.children === 'number' ||
-      (typeof props.dangerouslySetInnerHTML === 'object' &&
-        props.dangerouslySetInnerHTML !== null &&
-        typeof props.dangerouslySetInnerHTML.__html === 'string')
-    );
-  },
-
-  shouldDeprioritizeSubtree(type: string, props: Props): boolean {
-    return !!props.hidden;
-  },
-
-  createTextInstance(
-    text: string,
-    rootContainerInstance: Container,
-    hostContext: HostContext,
-    internalInstanceHandle: Object,
-  ): TextInstance {
-    if (__DEV__) {
-      const hostContextDev = ((hostContext: any): HostContextDev);
-      validateDOMNesting(null, text, hostContextDev.ancestorInfo);
-    }
-    const textNode: TextInstance = createTextNode(text, rootContainerInstance);
-    precacheFiberNode(internalInstanceHandle, textNode);
-    return textNode;
-  },
-
-  now: ReactDOMFrameScheduling.now,
-
-  mutation: {
-    commitMount(
-      domElement: Instance,
-      type: string,
-      newProps: Props,
-      internalInstanceHandle: Object,
-    ): void {
-      // Despite the naming that might imply otherwise, this method only
-      // fires if there is an `Update` effect scheduled during mounting.
-      // This happens if `finalizeInitialChildren` returns `true` (which it
-      // does to implement the `autoFocus` attribute on the client). But
-      // there are also other cases when this might happen (such as patching
-      // up text content during hydration mismatch). So we'll check this again.
-      if (shouldAutoFocusHostComponent(type, newProps)) {
-        ((domElement: any):
-          | HTMLButtonElement
-          | HTMLInputElement
-          | HTMLSelectElement
-          | HTMLTextAreaElement).focus();
-      }
-    },
-
-    commitUpdate(
-      domElement: Instance,
-      updatePayload: Array<mixed>,
-      type: string,
-      oldProps: Props,
-      newProps: Props,
-      internalInstanceHandle: Object,
-    ): void {
-      // Update the props handle so that we know which props are the ones with
-      // with current event handlers.
-      updateFiberProps(domElement, newProps);
-      // Apply the diff to the DOM node.
-      updateProperties(domElement, updatePayload, type, oldProps, newProps);
-    },
-
-    resetTextContent(domElement: Instance): void {
-      setTextContent(domElement, '');
-    },
-
-    commitTextUpdate(
-      textInstance: TextInstance,
-      oldText: string,
-      newText: string,
-    ): void {
-      textInstance.nodeValue = newText;
-    },
-
-    appendChild(
-      parentInstance: Instance,
-      child: Instance | TextInstance,
-    ): void {
-      parentInstance.appendChild(child);
-    },
-
-    appendChildToContainer(
-      container: Container,
-      child: Instance | TextInstance,
-    ): void {
-      if (container.nodeType === COMMENT_NODE) {
-        (container.parentNode: any).insertBefore(child, container);
-      } else {
-        container.appendChild(child);
-      }
-    },
-
-    insertBefore(
-      parentInstance: Instance,
-      child: Instance | TextInstance,
-      beforeChild: Instance | TextInstance,
-    ): void {
-      parentInstance.insertBefore(child, beforeChild);
-    },
-
-    insertInContainerBefore(
-      container: Container,
-      child: Instance | TextInstance,
-      beforeChild: Instance | TextInstance,
-    ): void {
-      if (container.nodeType === COMMENT_NODE) {
-        (container.parentNode: any).insertBefore(child, beforeChild);
-      } else {
-        container.insertBefore(child, beforeChild);
-      }
-    },
-
-    removeChild(
-      parentInstance: Instance,
-      child: Instance | TextInstance,
-    ): void {
-      parentInstance.removeChild(child);
-    },
-
-    removeChildFromContainer(
-      container: Container,
-      child: Instance | TextInstance,
-    ): void {
-      if (container.nodeType === COMMENT_NODE) {
-        (container.parentNode: any).removeChild(child);
-      } else {
-        container.removeChild(child);
-      }
-    },
-  },
-
-  hydration: {
-    canHydrateInstance(
-      instance: Instance | TextInstance,
-      type: string,
-      props: Props,
-    ): null | Instance {
-      if (
-        instance.nodeType !== ELEMENT_NODE ||
-        type.toLowerCase() !== instance.nodeName.toLowerCase()
-      ) {
-        return null;
-      }
-      // This has now been refined to an element node.
-      return ((instance: any): Instance);
-    },
-
-    canHydrateTextInstance(
-      instance: Instance | TextInstance,
-      text: string,
-    ): null | TextInstance {
-      if (text === '' || instance.nodeType !== TEXT_NODE) {
-        // Empty strings are not parsed by HTML so there won't be a correct match here.
-        return null;
-      }
-      // This has now been refined to a text node.
-      return ((instance: any): TextInstance);
-    },
-
-    getNextHydratableSibling(
-      instance: Instance | TextInstance,
-    ): null | Instance | TextInstance {
-      let node = instance.nextSibling;
-      // Skip non-hydratable nodes.
-      while (
-        node &&
-        node.nodeType !== ELEMENT_NODE &&
-        node.nodeType !== TEXT_NODE
-      ) {
-        node = node.nextSibling;
-      }
-      return (node: any);
-    },
-
-    getFirstHydratableChild(
-      parentInstance: Container | Instance,
-    ): null | Instance | TextInstance {
-      let next = parentInstance.firstChild;
-      // Skip non-hydratable nodes.
-      while (
-        next &&
-        next.nodeType !== ELEMENT_NODE &&
-        next.nodeType !== TEXT_NODE
-      ) {
-        next = next.nextSibling;
-      }
-      return (next: any);
-    },
-
-    hydrateInstance(
-      instance: Instance,
-      type: string,
-      props: Props,
-      rootContainerInstance: Container,
-      hostContext: HostContext,
-      internalInstanceHandle: Object,
-    ): null | Array<mixed> {
-      precacheFiberNode(internalInstanceHandle, instance);
-      // TODO: Possibly defer this until the commit phase where all the events
-      // get attached.
-      updateFiberProps(instance, props);
-      let parentNamespace: string;
-      if (__DEV__) {
-        const hostContextDev = ((hostContext: any): HostContextDev);
-        parentNamespace = hostContextDev.namespace;
-      } else {
-        parentNamespace = ((hostContext: any): HostContextProd);
-      }
-      return diffHydratedProperties(
-        instance,
-        type,
-        props,
-        parentNamespace,
-        rootContainerInstance,
-      );
-    },
-
-    hydrateTextInstance(
-      textInstance: TextInstance,
-      text: string,
-      internalInstanceHandle: Object,
-    ): boolean {
-      precacheFiberNode(internalInstanceHandle, textInstance);
-      return diffHydratedText(textInstance, text);
-    },
-
-    didNotMatchHydratedContainerTextInstance(
-      parentContainer: Container,
-      textInstance: TextInstance,
-      text: string,
-    ) {
-      if (__DEV__) {
-        warnForUnmatchedText(textInstance, text);
-      }
-    },
-
-    didNotMatchHydratedTextInstance(
-      parentType: string,
-      parentProps: Props,
-      parentInstance: Instance,
-      textInstance: TextInstance,
-      text: string,
-    ) {
-      if (__DEV__ && parentProps[SUPPRESS_HYDRATION_WARNING] !== true) {
-        warnForUnmatchedText(textInstance, text);
-      }
-    },
-
-    didNotHydrateContainerInstance(
-      parentContainer: Container,
-      instance: Instance | TextInstance,
-    ) {
-      if (__DEV__) {
-        if (instance.nodeType === 1) {
-          warnForDeletedHydratableElement(parentContainer, (instance: any));
-        } else {
-          warnForDeletedHydratableText(parentContainer, (instance: any));
-        }
-      }
-    },
-
-    didNotHydrateInstance(
-      parentType: string,
-      parentProps: Props,
-      parentInstance: Instance,
-      instance: Instance | TextInstance,
-    ) {
-      if (__DEV__ && parentProps[SUPPRESS_HYDRATION_WARNING] !== true) {
-        if (instance.nodeType === 1) {
-          warnForDeletedHydratableElement(parentInstance, (instance: any));
-        } else {
-          warnForDeletedHydratableText(parentInstance, (instance: any));
-        }
-      }
-    },
-
-    didNotFindHydratableContainerInstance(
-      parentContainer: Container,
-      type: string,
-      props: Props,
-    ) {
-      if (__DEV__) {
-        warnForInsertedHydratedElement(parentContainer, type, props);
-      }
-    },
-
-    didNotFindHydratableContainerTextInstance(
-      parentContainer: Container,
-      text: string,
-    ) {
-      if (__DEV__) {
-        warnForInsertedHydratedText(parentContainer, text);
-      }
-    },
-
-    didNotFindHydratableInstance(
-      parentType: string,
-      parentProps: Props,
-      parentInstance: Instance,
-      type: string,
-      props: Props,
-    ) {
-      if (__DEV__ && parentProps[SUPPRESS_HYDRATION_WARNING] !== true) {
-        warnForInsertedHydratedElement(parentInstance, type, props);
-      }
-    },
-
-    didNotFindHydratableTextInstance(
-      parentType: string,
-      parentProps: Props,
-      parentInstance: Instance,
-      text: string,
-    ) {
-      if (__DEV__ && parentProps[SUPPRESS_HYDRATION_WARNING] !== true) {
-        warnForInsertedHydratedText(parentInstance, text);
-      }
-    },
-  },
-
-  scheduleDeferredCallback: ReactDOMFrameScheduling.rIC,
-  cancelDeferredCallback: ReactDOMFrameScheduling.cIC,
-});
-
-ReactGenericBatching.injection.injectRenderer(DOMRenderer);
+setBatchingImplementation(
+  batchedUpdates,
+  interactiveUpdates,
+  flushInteractiveUpdates,
+);
 
 let warnedAboutHydrateAPI = false;
 
@@ -1012,12 +509,12 @@ function legacyCreateRootFromDOMContainer(
           (rootSibling: any).hasAttribute(ROOT_ATTRIBUTE_NAME)
         ) {
           warned = true;
-          // warning(
-          //   false,
-          //   'render(): Target node has markup rendered by React, but there ' +
-          //     'are unrelated nodes as well. This is most commonly caused by ' +
-          //     'white-space inserted around server-rendered markup.',
-          // );
+          warningWithoutStack(
+            false,
+            'render(): Target node has markup rendered by React, but there ' +
+              'are unrelated nodes as well. This is most commonly caused by ' +
+              'white-space inserted around server-rendered markup.',
+          );
         }
       }
       container.removeChild(rootSibling);
@@ -1035,8 +532,8 @@ function legacyCreateRootFromDOMContainer(
     }
   }
   // Legacy roots are not async by default.
-  const isAsync = false;
-  return new ReactRoot(container, isAsync, shouldHydrate);
+  const isConcurrent = false;
+  return new ReactRoot(container, isConcurrent, shouldHydrate);
 }
 
 function legacyRenderSubtreeIntoContainer(
@@ -1047,10 +544,10 @@ function legacyRenderSubtreeIntoContainer(
   callback: ?Function,
 ) {
   // TODO: Ensure all entry points contain this check
-  // invariant(
-  //   isValidContainer(container),
-  //   'Target container is not a DOM element.',
-  // );
+  invariant(
+    isValidContainer(container),
+    'Target container is not a DOM element.',
+  );
 
   if (__DEV__) {
     topLevelUpdateWarnings(container);
@@ -1068,12 +565,12 @@ function legacyRenderSubtreeIntoContainer(
     if (typeof callback === 'function') {
       const originalCallback = callback;
       callback = function() {
-        const instance = DOMRenderer.getPublicRootInstance(root._internalRoot);
+        const instance = getPublicRootInstance(root._internalRoot);
         originalCallback.call(instance);
       };
     }
     // Initial mount should not be batched.
-    DOMRenderer.unbatchedUpdates(() => {
+    unbatchedUpdates(() => {
       if (parentComponent != null) {
         root.legacy_renderSubtreeIntoContainer(
           parentComponent,
@@ -1088,7 +585,7 @@ function legacyRenderSubtreeIntoContainer(
     if (typeof callback === 'function') {
       const originalCallback = callback;
       callback = function() {
-        const instance = DOMRenderer.getPublicRootInstance(root._internalRoot);
+        const instance = getPublicRootInstance(root._internalRoot);
         originalCallback.call(instance);
       };
     }
@@ -1103,7 +600,7 @@ function legacyRenderSubtreeIntoContainer(
       root.render(children, callback);
     }
   }
-  return DOMRenderer.getPublicRootInstance(root._internalRoot);
+  return getPublicRootInstance(root._internalRoot);
 }
 
 function createPortal(
@@ -1116,7 +613,7 @@ function createPortal(
     'Target container is not a DOM element.',
   );
   // TODO: pass ReactDOM portal implementation as third argument
-  return ReactPortal.createPortal(children, container, null, key);
+  return createPortalImpl(children, container, null, key);
 }
 
 const ReactDOM: Object = {
@@ -1130,14 +627,14 @@ const ReactDOM: Object = {
       if (owner !== null && owner.stateNode !== null) {
         const warnedAboutRefsInRender =
           owner.stateNode._warnedAboutRefsInRender;
-        warning(
+        warningWithoutStack(
           warnedAboutRefsInRender,
           '%s is accessing findDOMNode inside its render(). ' +
             'render() should be a pure function of props and state. It should ' +
             'never access something that requires stale data from the previous ' +
             'render, such as refs. Move this logic to componentDidMount and ' +
             'componentDidUpdate instead.',
-          getComponentName(owner) || 'A component',
+          getComponentName(owner.type) || 'A component',
         );
         owner.stateNode._warnedAboutRefsInRender = true;
       }
@@ -1148,21 +645,10 @@ const ReactDOM: Object = {
     if ((componentOrElement: any).nodeType === ELEMENT_NODE) {
       return (componentOrElement: any);
     }
-
-    const inst = ReactInstanceMap.get(componentOrElement);
-    if (inst) {
-      return DOMRenderer.findHostInstance(inst);
+    if (__DEV__) {
+      return findHostInstanceWithWarning(componentOrElement, 'findDOMNode');
     }
-
-    if (typeof componentOrElement.render === 'function') {
-      invariant(false, 'Unable to find node on an unmounted component.');
-    } else {
-      invariant(
-        false,
-        'Element appears to be neither ReactComponent nor DOMNode. Keys: %s',
-        Object.keys(componentOrElement),
-      );
-    }
+    return findHostInstance(componentOrElement);
   },
 
   hydrate(element: React$Node, container: DOMContainer, callback: ?Function) {
@@ -1197,7 +683,7 @@ const ReactDOM: Object = {
     callback: ?Function,
   ) {
     invariant(
-      parentComponent != null && ReactInstanceMap.has(parentComponent),
+      parentComponent != null && hasInstance(parentComponent),
       'parentComponent must be a valid React Component',
     );
     return legacyRenderSubtreeIntoContainer(
@@ -1218,9 +704,8 @@ const ReactDOM: Object = {
     if (container._reactRootContainer) {
       if (__DEV__) {
         const rootEl = getReactRootElementInContainer(container);
-        const renderedByDifferentReact =
-          rootEl && !ReactDOMComponentTree.getInstanceFromNode(rootEl);
-        warning(
+        const renderedByDifferentReact = rootEl && !getInstanceFromNode(rootEl);
+        warningWithoutStack(
           !renderedByDifferentReact,
           "unmountComponentAtNode(): The node you're attempting to unmount " +
             'was rendered by another copy of React.',
@@ -1228,7 +713,7 @@ const ReactDOM: Object = {
       }
 
       // Unmount should not be batched.
-      DOMRenderer.unbatchedUpdates(() => {
+      unbatchedUpdates(() => {
         legacyRenderSubtreeIntoContainer(null, null, container, false, () => {
           container._reactRootContainer = null;
         });
@@ -1239,17 +724,15 @@ const ReactDOM: Object = {
     } else {
       if (__DEV__) {
         const rootEl = getReactRootElementInContainer(container);
-        const hasNonRootReactChild = !!(
-          rootEl && ReactDOMComponentTree.getInstanceFromNode(rootEl)
-        );
+        const hasNonRootReactChild = !!(rootEl && getInstanceFromNode(rootEl));
 
         // Check if the container itself is a React root node.
         const isContainerReactRoot =
-          container.nodeType === 1 &&
+          container.nodeType === ELEMENT_NODE &&
           isValidContainer(container.parentNode) &&
           !!container.parentNode._reactRootContainer;
 
-        warning(
+        warningWithoutStack(
           !hasNonRootReactChild,
           "unmountComponentAtNode(): The node you're attempting to unmount " +
             'was rendered by React and is not a top-level container. %s',
@@ -1281,23 +764,31 @@ const ReactDOM: Object = {
     return createPortal(...args);
   },
 
-  unstable_batchedUpdates: DOMRenderer.batchedUpdates,
+  unstable_batchedUpdates: batchedUpdates,
 
-  unstable_deferredUpdates: DOMRenderer.deferredUpdates,
+  unstable_interactiveUpdates: interactiveUpdates,
 
-  flushSync: DOMRenderer.flushSync,
+  flushSync: flushSync,
 
-  unstable_flushControlled: DOMRenderer.flushControlled,
+  unstable_createRoot: createRoot,
+  unstable_flushControlled: flushControlled,
 
   __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED: {
-    // For TapEventPlugin which is popular in open source
-    EventPluginHub,
-    // Used by test-utils
-    EventPluginRegistry,
-    EventPropagators,
-    ReactControlledComponent,
-    ReactDOMComponentTree,
-    ReactDOMEventListener,
+    // Keep in sync with ReactDOMUnstableNativeDependencies.js
+    // and ReactTestUtils.js. This is an array for better minification.
+    Events: [
+      getInstanceFromNode,
+      getNodeFromInstance,
+      getFiberCurrentPropsFromNode,
+      EventPluginHubInjection.injectEventPluginsByName,
+      eventNameDispatchConfigs,
+      accumulateTwoPhaseDispatches,
+      accumulateDirectDispatches,
+      enqueueStateRestore,
+      restoreStateIfNeeded,
+      dispatchEvent,
+      runEventsInBatch,
+    ],
   },
 };
 
@@ -1305,29 +796,33 @@ type RootOptions = {
   hydrate?: boolean,
 };
 
-if (enableCreateRoot) {
-  ReactDOM.createRoot = function createRoot(
-    container: DOMContainer,
-    options?: RootOptions,
-  ): ReactRoot {
-    const hydrate = options != null && options.hydrate === true;
-    return new ReactRoot(container, true, hydrate);
-  };
+function createRoot(container: DOMContainer, options?: RootOptions): ReactRoot {
+  const functionName = enableStableConcurrentModeAPIs
+    ? 'createRoot'
+    : 'unstable_createRoot';
+  invariant(
+    isValidContainer(container),
+    '%s(...): Target container is not a DOM element.',
+    functionName,
+  );
+  const hydrate = options != null && options.hydrate === true;
+  return new ReactRoot(container, true, hydrate);
 }
 
-const foundDevTools = DOMRenderer.injectIntoDevTools({
-  findFiberByHostInstance: ReactDOMComponentTree.getClosestInstanceFromNode,
+if (enableStableConcurrentModeAPIs) {
+  ReactDOM.createRoot = createRoot;
+  ReactDOM.unstable_createRoot = undefined;
+}
+
+const foundDevTools = injectIntoDevTools({
+  findFiberByHostInstance: getClosestInstanceFromNode,
   bundleType: __DEV__ ? 1 : 0,
   version: ReactVersion,
   rendererPackageName: 'react-dom',
 });
 
 if (__DEV__) {
-  if (
-    !foundDevTools &&
-    ExecutionEnvironment.canUseDOM &&
-    window.top === window.self
-  ) {
+  if (!foundDevTools && canUseDOM && window.top === window.self) {
     // If we're in Chrome or Firefox, provide a download link if not installed.
     if (
       (navigator.userAgent.indexOf('Chrome') > -1 &&
